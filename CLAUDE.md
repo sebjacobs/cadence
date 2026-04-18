@@ -10,7 +10,7 @@ Tools for building tempo-ramped run playlists. See `README.md` for the pipeline 
 
 ## Current focus
 
-Playlist generation is the active layer: `scripts/generate_run_playlists.py` selects tracks at a target BPM from `music.db`, retempos, mixes with crossfades, and wraps as mp4 under `tmp/playlists/<bpm>bpm/<mins>mins/`. `scripts/extend_playlist_tsvs.py` tops up short tsvs. BPM ingestion pipeline is complete — see `ROADMAP.md` for done/open items.
+Playlist generation is the active layer: `scripts/generate_run_playlists.py` selects tracks at a target BPM from `music.db`, retempos, mixes with crossfades, wraps as mp4 under `tmp/playlists/<bpm>bpm/<mins>mins/`, and emits a `{slug}_tracklist.txt` sidecar with crossfade-adjusted timestamps for YouTube descriptions. `scripts/extend_playlist_tsvs.py` tops up short tsvs. `scripts/write_tracklists.py` backfills tracklists for already-rendered mixes without re-mixing. BPM ingestion pipeline is complete — see `ROADMAP.md` for done/open items.
 
 ## Tools
 
