@@ -30,6 +30,8 @@ from mutagen.mp3 import MP3
 
 REPO = Path(__file__).resolve().parent.parent
 MIX_SH = REPO / "scripts" / "mix.sh"
+TOVIDEO_SH = REPO / "scripts" / "tovideo.sh"
+DEFAULT_COVER = REPO / "assets" / "cover.png"
 
 
 def select(conn, target_bpm, min_bpm, max_bpm, min_dur, max_dur):
@@ -106,6 +108,10 @@ def main() -> int:
     p.add_argument("--max-duration", type=float, default=420.0)
     p.add_argument("--crossfade", type=int, default=4)
     p.add_argument("--output-dir", type=Path, default=REPO / "tmp" / "playlists")
+    p.add_argument("--cover", type=Path, default=DEFAULT_COVER,
+                   help=f"cover image for mp4 wrap (default: {DEFAULT_COVER.relative_to(REPO)})")
+    p.add_argument("--no-video", action="store_true",
+                   help="skip wrapping the mp3 into an mp4")
     args = p.parse_args()
 
     random.seed(args.seed)
@@ -170,6 +176,15 @@ def main() -> int:
         audio["genre"] = "D&B"
         audio["bpm"] = str(int(args.target_bpm))
         audio.save()
+
+        if not args.no_video:
+            if not args.cover.exists():
+                print(f"  cover not found at {args.cover} — skipping video", file=sys.stderr)
+            else:
+                video_out = args.output_dir / f"{slug}.mp4"
+                print(f"  wrapping → {video_out}", file=sys.stderr)
+                subprocess.run([str(TOVIDEO_SH), "-i", str(args.cover),
+                                "-a", str(mix_out), "-o", str(video_out)], check=True)
 
         remaining = [t for t in remaining if t not in pl]
         random.shuffle(remaining)
