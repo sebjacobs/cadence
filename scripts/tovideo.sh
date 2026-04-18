@@ -39,7 +39,10 @@ if [[ -z "$output" ]]; then
 fi
 
 printf 'wrapping %s + %s → %s\n' "$audio" "$cover" "$output"
-ffmpeg -y -loop 1 -i "$cover" -i "$audio" \
-  -c:v libx264 -tune stillimage -pix_fmt yuv420p \
+# The image never changes — encode at 1 fps so we're not re-encoding
+# thousands of identical frames. YouTube accepts low-fps static videos.
+ffmpeg -y -loop 1 -framerate 1 -i "$cover" -i "$audio" \
+  -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+  -c:v libx264 -tune stillimage -pix_fmt yuv420p -r 1 \
   -c:a aac -b:a 192k -shortest "$output"
 printf 'wrote %s\n' "$output"
