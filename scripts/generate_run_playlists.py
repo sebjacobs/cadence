@@ -21,6 +21,7 @@ import argparse
 import concurrent.futures
 import os
 import random
+import re
 import sqlite3
 import subprocess
 import sys
@@ -96,9 +97,103 @@ def retempo(src: Path, src_bpm: float, target_bpm: float, out: Path) -> None:
         stretched.unlink()
 
 
+def read_tsv(tsv: Path) -> tuple[list[tuple], float]:
+    """Parse a ramp tsv written by this script. Returns (pl_tuples, total_s).
+
+    Total duration is parsed from the header comment if present; otherwise 0.
+    """
+    pl: list[tuple] = []
+    total_s = 0.0
+    for line in tsv.read_text().splitlines():
+        if line.startswith("#"):
+            m = re.search(r"duration=([\d.]+)m", line)
+            if m:
+                total_s = float(m.group(1)) * 60
+            continue
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        path, src_bpm = parts[0], float(parts[1])
+        pl.append(("", "", src_bpm, 0, path))
+    return pl, total_s
+
+
+def render_playlist(n: int, pl: list[tuple], total_s: float, slug: str,
+                    dur_min: int, args, video_executor, video_futures) -> None:
+    bucket = Path(f"{int(args.target_bpm)}bpm") / f"{dur_min}mins"
+    exports_dir = args.output_dir / bucket
+    sources_dir = args.sources_dir / bucket
+    exports_dir.mkdir(parents=True, exist_ok=True)
+    sources_dir.mkdir(parents=True, exist_ok=True)
+
+    ramp_path = sources_dir / f"{slug}.tsv"
+    with ramp_path.open("w") as f:
+        f.write(f"# target_bpm={int(args.target_bpm)}, duration={total_s/60:.1f}m\n")
+        for _a, _t, bpm, _d, path in pl:
+            f.write(f"{path}\t{bpm}\t{int(args.target_bpm)}\n")
+    print(f"\n=== Playlist {n} → {slug}.mp3 ({total_s/60:.1f} min) ===", file=sys.stderr)
+    for a, t, bpm, d, path in pl:
+        label = f"{a} — {t}" if (a or t) else Path(path).name
+        print(f"  {int(bpm)} bpm  {d/60:4.1f}m  {label}", file=sys.stderr)
+
+    work = sources_dir / f"{slug}_work"
+    work.mkdir(exist_ok=True)
+    jobs = []
+    for i, (_a, _t, bpm, _d, path) in enumerate(pl, 1):
+        out = work / f"{i:02d}_{int(bpm)}to{int(args.target_bpm)}.mp3"
+        jobs.append((i, bpm, Path(path), out))
+
+    retempoed_paths: list[str | None] = [None] * len(jobs)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as ex:
+        futures = {
+            ex.submit(retempo, src, bpm, args.target_bpm, out): (i, bpm, src, out)
+            for (i, bpm, src, out) in jobs
+        }
+        for fut in concurrent.futures.as_completed(futures):
+            i, bpm, src, out = futures[fut]
+            fut.result()
+            print(f"  [{i}/{len(jobs)}] retempo {bpm}→{int(args.target_bpm)}: {src.name}",
+                  file=sys.stderr)
+            retempoed_paths[i - 1] = str(out)
+
+    mix_out = exports_dir / f"{slug}.mp3"
+    print(f"  mixing → {mix_out}", file=sys.stderr)
+    subprocess.run([str(MIX_SH), "-d", str(args.crossfade), "-o", str(mix_out),
+                    *retempoed_paths], check=True)
+
+    try:
+        audio = MP3(str(mix_out), ID3=EasyID3)
+    except ID3NoHeaderError:
+        audio = MP3(str(mix_out), ID3=EasyID3)
+        audio.add_tags()
+    for key in ("title", "artist", "album", "albumartist",
+                "tracknumber", "date", "genre"):
+        if key in audio:
+            del audio[key]
+    audio["title"] = f"Run Mix {n} — {int(args.target_bpm)} BPM D&B"
+    audio["artist"] = "Various"
+    audio["album"] = "Run Playlists"
+    audio["genre"] = "D&B"
+    audio["bpm"] = str(int(args.target_bpm))
+    audio.save()
+
+    if not args.no_video:
+        if not args.cover.exists():
+            print(f"  cover not found at {args.cover} — skipping video", file=sys.stderr)
+        else:
+            def wrap_video(mix_out: Path, video_out: Path, cover: Path) -> None:
+                print(f"  wrapping → {video_out}", file=sys.stderr)
+                subprocess.run([str(TOVIDEO_SH), "-i", str(cover),
+                                "-a", str(mix_out), "-o", str(video_out)], check=True)
+            video_out = exports_dir / f"{slug}.mp4"
+            video_futures.append(video_executor.submit(
+                wrap_video, mix_out, video_out, args.cover))
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--db", required=True, type=Path)
+    p.add_argument("--db", type=Path,
+                   help="music.db (required unless --from-tsv is used)")
     p.add_argument("--target-bpm", type=float, default=174.0)
     p.add_argument("--duration-min", type=float, default=30.0)
     p.add_argument("--tolerance-s", type=float, default=60.0)
@@ -111,105 +206,68 @@ def main() -> int:
     p.add_argument("--crossfade", type=int, default=4)
     p.add_argument("--workers", type=int, default=max(2, (os.cpu_count() or 4) // 2),
                    help="parallel retempo workers (default: half of cpu count)")
-    p.add_argument("--output-dir", type=Path, default=REPO / "tmp" / "playlists")
+    p.add_argument("--output-dir", type=Path, default=REPO / "tmp" / "playlists",
+                   help="where finished mp3/mp4 deliverables land")
+    p.add_argument("--sources-dir", type=Path, default=None,
+                   help="where ramp tsvs and _work retempo dirs land "
+                        "(default: sibling 'playlist_sources' of --output-dir)")
     p.add_argument("--cover", type=Path, default=DEFAULT_COVER,
                    help=f"cover image for mp4 wrap (default: {DEFAULT_COVER.relative_to(REPO)})")
     p.add_argument("--no-video", action="store_true",
                    help="skip wrapping the mp3 into an mp4")
+    p.add_argument("--from-tsv", type=Path, nargs="+",
+                   help="re-render existing ramp tsv(s) at --target-bpm instead of "
+                        "selecting fresh tracks from --db")
     args = p.parse_args()
 
-    random.seed(args.seed)
+    if not args.from_tsv and not args.db:
+        p.error("--db is required unless --from-tsv is supplied")
+
+    if args.sources_dir is None:
+        args.sources_dir = args.output_dir.parent / "playlist_sources"
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(args.db)
-    tracks = select(
-        conn,
-        args.target_bpm,
-        args.target_bpm - args.bpm_range,
-        args.target_bpm + args.bpm_range,
-        args.min_duration,
-        args.max_duration,
-    )
-    conn.close()
-    random.shuffle(tracks)
-    print(f"eligible unique tracks: {len(tracks)}", file=sys.stderr)
-
-    target_s = args.duration_min * 60
-    remaining = list(tracks)
+    args.sources_dir.mkdir(parents=True, exist_ok=True)
     video_executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
     video_futures: list[concurrent.futures.Future] = []
 
-    def wrap_video(mix_out: Path, video_out: Path, cover: Path) -> None:
-        print(f"  wrapping → {video_out}", file=sys.stderr)
-        subprocess.run([str(TOVIDEO_SH), "-i", str(cover),
-                        "-a", str(mix_out), "-o", str(video_out)], check=True)
+    if args.from_tsv:
+        for n, tsv in enumerate(args.from_tsv, 1):
+            pl, total_s = read_tsv(tsv)
+            if not pl:
+                print(f"{tsv}: empty — skipping", file=sys.stderr)
+                continue
+            dur_min = int(round((total_s or args.duration_min * 60) / 60))
+            slug = f"run_{int(args.target_bpm)}bpm_{dur_min}min_{n}"
+            render_playlist(n, pl, total_s, slug, dur_min, args, video_executor, video_futures)
+    else:
+        random.seed(args.seed)
+        conn = sqlite3.connect(args.db)
+        tracks = select(
+            conn,
+            args.target_bpm,
+            args.target_bpm - args.bpm_range,
+            args.target_bpm + args.bpm_range,
+            args.min_duration,
+            args.max_duration,
+        )
+        conn.close()
+        random.shuffle(tracks)
+        print(f"eligible unique tracks: {len(tracks)}", file=sys.stderr)
 
-    for n in range(1, args.count + 1):
-        pl, total = build_playlist(remaining, target_s, args.tolerance_s)
-        if not pl:
-            print(f"playlist {n}: no tracks left — stopping", file=sys.stderr)
-            break
-        slug = f"run{int(args.target_bpm)}_{n}"
-        ramp_path = args.output_dir / f"{slug}.tsv"
-        with ramp_path.open("w") as f:
-            f.write(f"# target_bpm={int(args.target_bpm)}, duration={total/60:.1f}m\n")
-            for a, t, bpm, d, path in pl:
-                f.write(f"{path}\t{bpm}\t{int(args.target_bpm)}\n")
-        print(f"\n=== Playlist {n} → {slug}.mp3 ({total/60:.1f} min) ===", file=sys.stderr)
-        for a, t, bpm, d, _ in pl:
-            print(f"  {int(bpm)} bpm  {d/60:4.1f}m  {a} — {t}", file=sys.stderr)
+        target_s = args.duration_min * 60
+        remaining = list(tracks)
 
-        work = args.output_dir / f"{slug}_work"
-        work.mkdir(exist_ok=True)
-        jobs = []
-        for i, (a, t, bpm, _d, path) in enumerate(pl, 1):
-            out = work / f"{i:02d}_{int(bpm)}to{int(args.target_bpm)}.mp3"
-            jobs.append((i, bpm, Path(path), out))
-
-        retempoed_paths = [None] * len(jobs)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as ex:
-            futures = {
-                ex.submit(retempo, src, bpm, args.target_bpm, out): (i, bpm, src, out)
-                for (i, bpm, src, out) in jobs
-            }
-            for fut in concurrent.futures.as_completed(futures):
-                i, bpm, src, out = futures[fut]
-                fut.result()
-                print(f"  [{i}/{len(jobs)}] retempo {bpm}→{int(args.target_bpm)}: {src.name}",
-                      file=sys.stderr)
-                retempoed_paths[i - 1] = str(out)
-
-        mix_out = args.output_dir / f"{slug}.mp3"
-        print(f"  mixing → {mix_out}", file=sys.stderr)
-        subprocess.run([str(MIX_SH), "-d", str(args.crossfade), "-o", str(mix_out),
-                        *retempoed_paths], check=True)
-
-        try:
-            audio = MP3(str(mix_out), ID3=EasyID3)
-        except ID3NoHeaderError:
-            audio = MP3(str(mix_out), ID3=EasyID3)
-            audio.add_tags()
-        for key in ("title", "artist", "album", "albumartist",
-                    "tracknumber", "date", "genre"):
-            if key in audio:
-                del audio[key]
-        audio["title"] = f"Run Mix {n} — {int(args.target_bpm)} BPM D&B"
-        audio["artist"] = "Various"
-        audio["album"] = "Run Playlists"
-        audio["genre"] = "D&B"
-        audio["bpm"] = str(int(args.target_bpm))
-        audio.save()
-
-        if not args.no_video:
-            if not args.cover.exists():
-                print(f"  cover not found at {args.cover} — skipping video", file=sys.stderr)
-            else:
-                video_out = args.output_dir / f"{slug}.mp4"
-                video_futures.append(video_executor.submit(
-                    wrap_video, mix_out, video_out, args.cover))
-
-        remaining = [t for t in remaining if t not in pl]
-        random.shuffle(remaining)
+        for n in range(1, args.count + 1):
+            pl, total = build_playlist(remaining, target_s, args.tolerance_s)
+            if not pl:
+                print(f"playlist {n}: no tracks left — stopping", file=sys.stderr)
+                break
+            dur_min = int(round(args.duration_min))
+            slug = f"run_{int(args.target_bpm)}bpm_{dur_min}min_{n}"
+            render_playlist(n, pl, total, slug, dur_min, args, video_executor, video_futures)
+            remaining = [t for t in remaining if t not in pl]
+            random.shuffle(remaining)
 
     for fut in video_futures:
         fut.result()
