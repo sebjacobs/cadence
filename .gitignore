@@ -1,0 +1,5 @@
+.venv/
+.jotter/
+music.db
+tmp/*
+!tmp/.gitkeep
