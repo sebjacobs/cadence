@@ -1,4 +1,4 @@
-# running-playlists
+# cadence
 
 Tools for building tempo-ramped run playlists. See `README.md` for the pipeline overview.
 

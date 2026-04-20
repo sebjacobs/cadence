@@ -1,4 +1,4 @@
-# running-playlists
+# cadence
 
 Build tempo-locked, crossfaded running mixes from your own music library, at exactly the BPM you want to run at.
 
@@ -48,8 +48,8 @@ macOS / Linux. Shell scripts are bash.
 ## Quick start
 
 ```bash
-git clone https://github.com/sebjacobs/running-playlists
-cd running-playlists
+git clone https://github.com/sebjacobs/cadence
+cd cadence
 
 # 1. Index your music library into a sqlite catalogue
 uv run scripts/index_music.py ~/Music

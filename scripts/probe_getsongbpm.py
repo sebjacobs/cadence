@@ -28,8 +28,8 @@ def lookup(api_key: str, artist: str, title: str) -> dict:
     })
     url = f"{API_BASE}?{params}"
     req = urllib.request.Request(url, headers={
-        "User-Agent": "running-playlists-probe/0.1",
-        "Referer": os.environ.get("BPM_API_REFERER", "https://github.com/sebjacobs/running-playlists"),
+        "User-Agent": "cadence-probe/0.1",
+        "Referer": os.environ.get("BPM_API_REFERER", "https://github.com/sebjacobs/cadence"),
     })
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read())
