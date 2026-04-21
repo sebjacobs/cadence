@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="cadence" width="240">
+</p>
+
 # cadence
 
 Build tempo-locked, crossfaded running mixes from your own music library, at exactly the BPM you want to run at.

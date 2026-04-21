@@ -4,3 +4,4 @@
 music.db
 tmp/*
 !tmp/.gitkeep
+nanobanana-output/
