@@ -14,6 +14,8 @@ Playlist generation is the active layer: `scripts/generate_run_playlists.py` sel
 
 Track selection respects `run_exclude=1` on `tracks`. Exclusions come from: `scripts/analyse_beat_clarity.py` (auto-sets `run_exclude_reason='half-step'` when `groove_delta < 0.05`); and `scripts/reject_track.py <id> "reason"` for manual cuts. `scripts/reject_track.py --review --m3u` exports beat-review candidates as a playlist for audition; `scripts/audit_shipped_playlists.py` reports which shipped-playlist tracks are now excluded. `scripts/probe_beat_clarity.py` is the diagnostic spike — calibrate thresholds before rerunning the batch analyser.
 
+Traktor Pro 3 is a secondary source of BPM / key / beatgrid anchors. Export the collection from Traktor to `collection.nml` at the repo root (gitignored), then `scripts/import_traktor.py` parses it and populates `traktor_bpm`, `traktor_key`, `traktor_beatgrid_ms`, `traktor_imported_at` on `tracks` — additive, does not overwrite existing `bpm`. Known gotcha: Traktor's "Automatic" BPM range halftimes many D&B tracks by selecting the lower octave — set the range to `128–255` in *Preferences → Analyze Options* before analysing a D&B-heavy collection.
+
 ## Tools
 
 - `ffmpeg` / `ffprobe` — tag extraction, stream inspection, audio conversion

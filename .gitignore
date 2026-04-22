@@ -2,6 +2,7 @@
 .jotter/
 .env
 music.db
+collection.nml
 tmp/*
 !tmp/.gitkeep
 nanobanana-output/
